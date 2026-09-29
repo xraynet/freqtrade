@@ -52,6 +52,8 @@ class Hyperliquid(Exchange):
         "funding_fee_candle_limit": 500,
         "uses_leverage_tiers": False,
         "mark_ohlcv_price": "futures",
+        # ccxt maps "total" to marginSummary.accountValue, which includes unrealized PnL
+        "balance_includes_unrealized_pnl": True,
     }
 
     _supported_trading_mode_margin_pairs: list[tuple[TradingMode, MarginMode]] = [
@@ -169,27 +171,29 @@ class Hyperliquid(Exchange):
         if self.unified_account:
             params["type"] = "spot"
         balances = super().get_balances(params)
-        dexes = self._get_configured_hip3_dexes()
-        for dex in dexes:
-            try:
-                dex_balance = super().get_balances(params={"dex": dex})
+        if not self.unified_account:
+            # In unified accounts, the balance already includes all DEXes
+            dexes = self._get_configured_hip3_dexes()
+            for dex in dexes:
+                try:
+                    dex_balance = super().get_balances(params={"dex": dex})
 
-                for currency, amount_info in dex_balance.items():
-                    if currency in ["info", "free", "used", "total", "datetime", "timestamp"]:
-                        continue
+                    for currency, amount_info in dex_balance.items():
+                        if currency in ["info", "free", "used", "total", "datetime", "timestamp"]:
+                            continue
 
-                    if currency not in balances:
-                        balances[currency] = amount_info
-                    else:
-                        balances[currency]["free"] += amount_info["free"]
-                        balances[currency]["used"] += amount_info["used"]
-                        balances[currency]["total"] += amount_info["total"]
+                        if currency not in balances:
+                            balances[currency] = amount_info
+                        else:
+                            balances[currency]["free"] += amount_info["free"]
+                            balances[currency]["used"] += amount_info["used"]
+                            balances[currency]["total"] += amount_info["total"]
 
-            except Exception as e:
-                logger.error(f"Could not fetch balance for HIP-3 DEX '{dex}': {e}")
+                except Exception as e:
+                    logger.error(f"Could not fetch balance for HIP-3 DEX '{dex}': {e}")
 
-        if dexes:
-            self._log_exchange_response("fetch_balance", balances, add_info="combined")
+            if dexes:
+                self._log_exchange_response("fetch_balance", balances, add_info="combined")
         return balances
 
     def fetch_positions(
@@ -347,6 +351,8 @@ class Hyperliquid(Exchange):
                     if total_amount
                     else None
                 )
+                # Fill lastTradeTimestamp - used to set filled date
+                order["lastTradeTimestamp"] = max(t.get("timestamp") or 0 for t in trades)
         return order
 
     def fetch_order(self, order_id: str, pair: str, params: dict | None = None) -> CcxtOrder:
